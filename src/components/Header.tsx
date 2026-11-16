@@ -65,6 +65,7 @@ export default function Header() {
 
   return (
     <>
+      {/* Floating Translucent Navigation Bar matching abidmahmud.cv */}
       <header
         className={`fixed top-3 md:top-4 left-3 right-3 md:left-0 md:right-0 md:mx-auto z-50 flex h-16 md:w-[min(1400px,calc(100%-2rem))] max-w-[1400px] items-center justify-between rounded-full border border-[#0B0B0D]/10 px-4 sm:px-6 md:px-8 transition-[background-color,backdrop-filter,box-shadow,border-color] duration-300 motion-reduce:transition-none ${
           isScrolled
@@ -80,7 +81,7 @@ export default function Header() {
           <AbidMahmudLogo height={28} />
         </a>
 
-        {/* Desktop Navigation Links */}
+        {/* Center Pill Menu for Desktop */}
         <ul className="hidden items-center gap-1 rounded-full border border-[#0B0B0D]/10 bg-[#0B0B0D]/[0.03] p-1 md:flex">
           <li>
             <a
@@ -124,7 +125,7 @@ export default function Header() {
           </li>
           <li>
             <a
-              className="flex min-h-[44px] items-center rounded-full px-3.5 py-1.5 text-sm font-medium text-[#1F8C7F] bg-white shadow-2xs"
+              className="flex min-h-[44px] items-center rounded-full px-3.5 py-1.5 text-sm font-semibold text-[#5846f6] bg-[#0B0B0D]/[0.06] transition-colors hover:text-[#0B0B0D]"
               href="https://tools.abidmahmud.cv/"
             >
               Tools
@@ -140,7 +141,7 @@ export default function Header() {
           </li>
         </ul>
 
-        {/* Right CTA Links */}
+        {/* Right CTA and Mobile Hamburger */}
         <div className="flex items-center gap-2.5 sm:gap-3">
           <a
             className="hidden rounded-full border border-[#0B0B0D]/15 px-3.5 py-1.5 text-xs font-mono font-medium text-[#0B0B0D] transition-colors hover:border-[#0B0B0D]/40 sm:inline-flex items-center gap-1.5 min-h-[44px]"
@@ -148,47 +149,45 @@ export default function Header() {
             target="_blank"
             rel="noopener noreferrer"
           >
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
             Upwork Top Rated
           </a>
-
           <a
             className="hidden rounded-full bg-[#0B0B0D] px-4 py-2 text-sm font-semibold text-white transition-transform hover:-translate-y-0.5 sm:inline-flex items-center min-h-[44px]"
             href="https://www.abidmahmud.cv/#contact"
           >
             Start a project
           </a>
-
           <button
             type="button"
-            aria-label="Open navigation menu"
+            className="relative flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-full border border-[#0B0B0D]/20 text-[#0B0B0D] md:hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#5846f6]"
+            aria-label={isMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
             aria-expanded={isMenuOpen}
             aria-controls="mobile-menu"
             onClick={() => setIsMenuOpen(!isMenuOpen)}
-            className="relative flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-full border border-[#0B0B0D]/20 text-[#0B0B0D] md:hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#5846f6]"
           >
             <span
               className={`absolute h-0.5 w-5 bg-[#0B0B0D] transition-transform duration-300 ${
-                isMenuOpen ? 'rotate-45' : '-translate-y-1.5'
+                isMenuOpen ? 'rotate-45 translate-y-0' : '-translate-y-1.5'
               }`}
-            />
+            ></span>
             <span
               className={`absolute h-0.5 w-5 bg-[#0B0B0D] transition-transform duration-300 ${
-                isMenuOpen ? '-rotate-45' : 'translate-y-1.5'
+                isMenuOpen ? '-rotate-45 translate-y-0' : 'translate-y-1.5'
               }`}
-            />
+            ></span>
           </button>
         </div>
       </header>
 
-      {/* Mobile Menu Dropdown Modal */}
+      {/* Mobile Drawer Menu - Solid white panel matching abidmahmud.cv */}
       <div
         id="mobile-menu"
         role="dialog"
         aria-label="Mobile navigation"
         aria-hidden={!isMenuOpen}
         className={`fixed inset-x-3 top-[76px] z-40 flex h-[calc(100dvh-5.5rem)] flex-col justify-between overflow-y-auto overscroll-contain rounded-3xl border border-[#0B0B0D]/10 bg-white px-6 py-8 shadow-2xl transition-[opacity,visibility] duration-300 md:hidden ${
-          isMenuOpen ? 'visible opacity-100' : 'invisible opacity-0 pointer-events-none'
+          isMenuOpen ? 'visible opacity-100 pointer-events-auto' : 'invisible opacity-0 pointer-events-none'
         }`}
       >
         <ul className="space-y-2">
@@ -216,7 +215,7 @@ export default function Header() {
               href="https://www.abidmahmud.cv/#process"
               onClick={closeMenu}
             >
-              Design Process
+              Process
             </a>
           </li>
           <li>
@@ -225,7 +224,7 @@ export default function Header() {
               href="https://www.abidmahmud.cv/about"
               onClick={closeMenu}
             >
-              About Me
+              About
             </a>
           </li>
           <li>
@@ -234,16 +233,16 @@ export default function Header() {
               href="https://www.abidmahmud.cv/blog"
               onClick={closeMenu}
             >
-              Blog
+              Insights &amp; Guides
             </a>
           </li>
           <li>
             <a
-              className="flex min-h-[44px] items-center font-display text-2xl font-bold text-[#1F8C7F]"
+              className="flex min-h-[44px] items-center font-display text-2xl font-bold text-[#5846f6]"
               href="https://tools.abidmahmud.cv/"
               onClick={closeMenu}
             >
-              Tools Suite
+              Free Tools
             </a>
           </li>
           <li>
@@ -257,24 +256,23 @@ export default function Header() {
           </li>
         </ul>
 
-        <div className="space-y-4 pt-6 border-t border-[#0B0B0D]/10">
+        <div className="space-y-3 pt-6 border-t border-[#0B0B0D]/10">
           <a
-            className="flex min-h-[48px] w-full items-center justify-center rounded-full bg-[#0B0B0D] px-6 py-3 font-display text-base font-semibold text-white shadow-md"
-            href="https://www.abidmahmud.cv/#contact"
-            onClick={closeMenu}
-          >
-            Start a project
-          </a>
-
-          <a
-            className="flex min-h-[44px] items-center justify-center gap-2 rounded-full border border-[#0B0B0D]/15 px-4 py-2 font-mono text-xs font-medium text-[#0B0B0D]"
+            className="flex min-h-[48px] items-center justify-center gap-2 rounded-full border border-[#0B0B0D]/15 py-3 font-mono text-sm text-[#0B0B0D] hover:border-[#0B0B0D]"
             href="https://www.upwork.com/freelancers/~0196a016d6dd8f59af"
             target="_blank"
             rel="noopener noreferrer"
             onClick={closeMenu}
           >
-            <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            Top Rated on Upwork (100% JSS)
+            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            Upwork Profile (Top Rated · 100% Success)
+          </a>
+          <a
+            className="flex min-h-[48px] items-center justify-center rounded-full bg-[#0B0B0D] py-3.5 font-semibold text-white hover:bg-[#5846f6] transition-colors"
+            href="https://www.abidmahmud.cv/#contact"
+            onClick={closeMenu}
+          >
+            Start a project
           </a>
         </div>
       </div>
