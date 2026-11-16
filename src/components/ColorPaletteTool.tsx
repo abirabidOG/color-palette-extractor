@@ -311,6 +311,7 @@ export default function ColorPaletteTool() {
 
   const handleRemoveSwatch = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    e.preventDefault();
     if (swatches.length <= 2) {
       setErrorMessage('At least 2 colors are needed in the palette.');
       return;
@@ -586,7 +587,7 @@ export default function ColorPaletteTool() {
                       {/* Badge if light, dark, or user-picked */}
                       {(swatch.isLight || swatch.isDark || swatch.isPicked) && (
                         <span
-                          className="absolute top-2.5 left-2.5 rounded-md px-1.5 py-0.5 text-[10px] font-mono font-bold uppercase tracking-wider backdrop-blur-md shadow-2xs"
+                          className="absolute top-2.5 left-2.5 z-10 rounded-md px-1.5 py-0.5 text-[10px] font-mono font-bold uppercase tracking-wider backdrop-blur-md shadow-2xs pointer-events-none"
                           style={{
                             backgroundColor:
                               swatch.luminance > 0.6
@@ -604,22 +605,23 @@ export default function ColorPaletteTool() {
                         </span>
                       )}
 
-                      {/* Remove custom swatch button */}
-                      {swatch.isPicked && (
+                      {/* Remove swatch button */}
+                      {swatches.length > 2 && (
                         <button
                           type="button"
                           onClick={(e) => handleRemoveSwatch(swatch.id, e)}
-                          className="absolute top-2 right-2 rounded-full bg-black/60 hover:bg-red-600 text-white p-1 transition-colors"
-                          aria-label="Remove swatch"
+                          className="absolute top-2 right-2 z-20 flex h-6 w-6 items-center justify-center rounded-full bg-black/65 hover:bg-rose-600 text-white transition-all opacity-80 sm:opacity-0 sm:group-hover:opacity-100 hover:scale-110 shadow-sm cursor-pointer"
+                          aria-label={`Remove color ${swatch.hex}`}
+                          title="Remove color from palette"
                         >
                           <Trash2 className="h-3 w-3" />
                         </button>
                       )}
 
                       {/* Hover / Click Copy Overlay */}
-                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/25">
+                      <div className="absolute inset-0 z-10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/25 pointer-events-none">
                         <div
-                          className="rounded-full px-3 py-1 text-xs font-bold shadow-md flex items-center gap-1.5"
+                          className="rounded-full px-3 py-1 text-xs font-bold shadow-md flex items-center gap-1.5 pointer-events-auto"
                           style={{
                             backgroundColor: swatch.textColor,
                             color:
