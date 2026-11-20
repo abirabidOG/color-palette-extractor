@@ -1,0 +1,1 @@
+{"name":"color-palette-extractor","owner":{"email":"abir.abid.43@gmail.com","name":"Abid Mahmud"},"plugins":[{"description":"Extract a colour palette from any photo or logo, right in Claude Code. Free, local, no sign-up.","name":"color-palette-extractor","source":"./plugins/color-palette-extractor","version":"0.1.0"}]}
