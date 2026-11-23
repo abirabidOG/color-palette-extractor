@@ -451,7 +451,7 @@ export default function ColorPaletteTool() {
       <div className="text-center space-y-4">
         <div className="inline-flex items-center gap-2 rounded-full bg-[#5846F6]/10 px-3.5 py-1 text-xs font-bold text-[#5846F6] border border-[#5846F6]/20">
           <Sparkles className="h-3.5 w-3.5" />
-          <span>Phase 2 Enhanced • WCAG Contrast • Gradient Builder • 100% Free</span>
+          <span>WCAG Contrast • Gradient Builder • 100% Free</span>
         </div>
         <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight text-[#0B0B0D]">
           Color Palette Extractor & Harmony Kit
@@ -703,7 +703,7 @@ export default function ColorPaletteTool() {
             <div className="rounded-2xl border border-[#C9C7C1] bg-[#F4F2EC] p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3">
               <span className="text-xs font-bold uppercase tracking-wider text-[#0B0B0D] flex items-center gap-1.5">
                 <Code className="h-4 w-4 text-[#5846F6]" />
-                <span>Phase 2 Code Exports:</span>
+                <span>Code Exports:</span>
               </span>
 
               <div className="flex items-center gap-2 flex-wrap">
