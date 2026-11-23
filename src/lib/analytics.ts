@@ -54,3 +54,46 @@ export function trackDownloadPalette(params: {
     console.debug('[Analytics] Failed to track download_palette', err);
   }
 }
+
+/**
+ * Phase 2 Events
+ */
+export function trackPaletteExported(exportType: 'css' | 'tailwind' | 'json' | 'png' | 'txt', count: number) {
+  if (typeof window === 'undefined' || typeof window.gtag !== 'function') return;
+  try {
+    window.gtag('event', 'palette_exported', {
+      export_type: exportType,
+      colors_count: count,
+      tool: 'color-palette-extractor',
+    });
+  } catch (err) {
+    console.debug('[Analytics] Failed to track palette_exported', err);
+  }
+}
+
+export function trackContrastChecked(hex: string, ratioWhite: number, ratioBlack: number) {
+  if (typeof window === 'undefined' || typeof window.gtag !== 'function') return;
+  try {
+    window.gtag('event', 'contrast_checked', {
+      swatch_hex: hex,
+      ratio_white: ratioWhite,
+      ratio_black: ratioBlack,
+      tool: 'color-palette-extractor',
+    });
+  } catch (err) {
+    console.debug('[Analytics] Failed to track contrast_checked', err);
+  }
+}
+
+export function trackGradientCopied(gradientCss: string, colorsCount: number) {
+  if (typeof window === 'undefined' || typeof window.gtag !== 'function') return;
+  try {
+    window.gtag('event', 'gradient_copied', {
+      css: gradientCss,
+      colors_count: colorsCount,
+      tool: 'color-palette-extractor',
+    });
+  } catch (err) {
+    console.debug('[Analytics] Failed to track gradient_copied', err);
+  }
+}

@@ -41,6 +41,177 @@ export function getContrastTextColor(r: number, g: number, b: number): string {
   return getLuminance(r, g, b) > 0.6 ? '#0B0B0D' : '#FFFFFF';
 }
 
+export function sRgbLuminance(c: number): number {
+  const v = c / 255;
+  return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+}
+
+export function getRelativeLuminance(r: number, g: number, b: number): number {
+  return 0.2126 * sRgbLuminance(r) + 0.7152 * sRgbLuminance(g) + 0.0722 * sRgbLuminance(b);
+}
+
+export function getWcagContrast(r: number, g: number, b: number) {
+  const L = getRelativeLuminance(r, g, b);
+  const ratioWhite = (1.0 + 0.05) / (L + 0.05);
+  const ratioBlack = (L + 0.05) / (0.0 + 0.05);
+  return {
+    ratioWhite: parseFloat(ratioWhite.toFixed(2)),
+    ratioBlack: parseFloat(ratioBlack.toFixed(2)),
+    aaWhite: ratioWhite >= 4.5,
+    aaaWhite: ratioWhite >= 7.0,
+    aaBlack: ratioBlack >= 4.5,
+    aaaBlack: ratioBlack >= 7.0,
+  };
+}
+
+// RGB <-> HSL conversions for harmony generation
+export function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  const nr = r / 255;
+  const ng = g / 255;
+  const nb = b / 255;
+  const max = Math.max(nr, ng, nb);
+  const min = Math.min(nr, ng, nb);
+  let h = 0;
+  let s = 0;
+  const l = (max + min) / 2;
+
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case nr:
+        h = (ng - nb) / d + (ng < nb ? 6 : 0);
+        break;
+      case ng:
+        h = (nb - nr) / d + 2;
+        break;
+      case nb:
+        h = (nr - ng) / d + 4;
+        break;
+    }
+    h /= 6;
+  }
+  return [Math.round(h * 360), Math.round(s * 100), Math.round(l * 100)];
+}
+
+export function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const nh = ((h % 360) + 360) % 360 / 360;
+  const ns = Math.max(0, Math.min(100, s)) / 100;
+  const nl = Math.max(0, Math.min(100, l)) / 100;
+
+  if (ns === 0) {
+    const val = Math.round(nl * 255);
+    return [val, val, val];
+  }
+
+  const hue2rgb = (p: number, q: number, t: number) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+
+  const q = nl < 0.5 ? nl * (1 + ns) : nl + ns - nl * ns;
+  const p = 2 * nl - q;
+  const r = Math.round(hue2rgb(p, q, nh + 1 / 3) * 255);
+  const g = Math.round(hue2rgb(p, q, nh) * 255);
+  const b = Math.round(hue2rgb(p, q, nh - 1 / 3) * 255);
+  return [r, g, b];
+}
+
+export function createSwatchFromRgb(r: number, g: number, b: number, idSuffix = ""): ColorSwatch {
+  const hex = rgbToHex(r, g, b);
+  const lum = getLuminance(r, g, b);
+  return {
+    id: `swatch-${idSuffix || hex.replace("#", "")}`,
+    hex,
+    rgb: [r, g, b],
+    rgbString: `rgb(${r}, ${g}, ${b})`,
+    luminance: lum,
+    textColor: getContrastTextColor(r, g, b),
+    isLight: lum >= 0.7,
+    isDark: lum <= 0.3,
+  };
+}
+
+export function generateHarmonies(baseSwatch: ColorSwatch): {
+  complementary: ColorSwatch[];
+  analogous: ColorSwatch[];
+  triadic: ColorSwatch[];
+} {
+  const [h, s, l] = rgbToHsl(baseSwatch.rgb[0], baseSwatch.rgb[1], baseSwatch.rgb[2]);
+
+  // Complementary (base + inverted hue)
+  const compRgb = hslToRgb((h + 180) % 360, s, l);
+  const compShade = hslToRgb((h + 180) % 360, Math.max(10, s - 20), Math.min(90, l + 20));
+  const complementary = [
+    baseSwatch,
+    createSwatchFromRgb(compRgb[0], compRgb[1], compRgb[2], "comp-1"),
+    createSwatchFromRgb(compShade[0], compShade[1], compShade[2], "comp-2"),
+  ];
+
+  // Analogous (base + -30 deg + +30 deg)
+  const a1 = hslToRgb((h - 30 + 360) % 360, s, l);
+  const a2 = hslToRgb((h + 30) % 360, s, l);
+  const analogous = [
+    createSwatchFromRgb(a1[0], a1[1], a1[2], "ana-1"),
+    baseSwatch,
+    createSwatchFromRgb(a2[0], a2[1], a2[2], "ana-2"),
+  ];
+
+  // Triadic (base + 120 deg + 240 deg)
+  const t1 = hslToRgb((h + 120) % 360, s, l);
+  const t2 = hslToRgb((h + 240) % 360, s, l);
+  const triadic = [
+    baseSwatch,
+    createSwatchFromRgb(t1[0], t1[1], t1[2], "tri-1"),
+    createSwatchFromRgb(t2[0], t2[1], t2[2], "tri-2"),
+  ];
+
+  return { complementary, analogous, triadic };
+}
+
+export function generateCssVariablesCode(swatches: ColorSwatch[]): string {
+  const lines = [":root {"];
+  swatches.forEach((s, idx) => {
+    lines.push(`  --color-${idx + 1}: ${s.hex}; /* rgb(${s.rgb.join(", ")}) */`);
+  });
+  lines.push("}");
+  return lines.join("\n");
+}
+
+export function generateTailwindConfigCode(swatches: ColorSwatch[]): string {
+  const colorLines = swatches
+    .map((s, idx) => `        '${idx + 1}': '${s.hex}',`)
+    .join("\n");
+  return `/** @type {import('tailwindcss').Config} */
+module.exports = {
+  theme: {
+    extend: {
+      colors: {
+        palette: {
+${colorLines}
+        },
+      },
+    },
+  },
+};`;
+}
+
+export function generateJsonCode(swatches: ColorSwatch[]): string {
+  const list = swatches.map((s, idx) => ({
+    index: idx + 1,
+    hex: s.hex,
+    rgb: s.rgb,
+    rgbString: s.rgbString,
+    luminance: parseFloat(s.luminance.toFixed(3)),
+    contrast: getWcagContrast(s.rgb[0], s.rgb[1], s.rgb[2]),
+  }));
+  return JSON.stringify(list, null, 2);
+}
+
 export function colorDistance(
   c1: [number, number, number],
   c2: [number, number, number]
@@ -142,7 +313,7 @@ function medianCut(pixels: Pixel[], targetBoxes: number): Pixel[][] {
 
 export function extractPaletteFromCanvas(
   canvas: HTMLCanvasElement,
-  targetCount: 3 | 5 | 8 = 5
+  targetCount: 3 | 5 | 8 | 12 = 5
 ): ColorSwatch[] {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return [];
@@ -335,8 +506,9 @@ export function extractPaletteFromCanvas(
   });
 }
 
-export function generatePaletteTxt(swatches: ColorSwatch[]): string {
-  return swatches.map((s) => s.hex).join('\n');
+export function generatePaletteTxt(swatches: ColorSwatch[], imageTitle?: string): string {
+  const header = imageTitle ? `# Color Palette - ${imageTitle}\n\n` : '';
+  return header + swatches.map((s) => `${s.hex}  /* ${s.rgbString} */`).join('\n');
 }
 
 export async function generatePalettePng(

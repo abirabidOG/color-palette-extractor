@@ -15,6 +15,12 @@ import {
   AlertCircle,
   X,
   Trash2,
+  Code,
+  Share2,
+  Bookmark,
+  Layers,
+  ChevronRight,
+  Eye,
 } from 'lucide-react';
 import {
   ColorSwatch,
@@ -23,11 +29,23 @@ import {
   hexToRgb,
   getLuminance,
   getContrastTextColor,
+  getWcagContrast,
+  generateHarmonies,
+  generateCssVariablesCode,
+  generateTailwindConfigCode,
+  generateJsonCode,
+  createSwatchFromRgb,
   generatePalettePng,
   generatePaletteTxt,
 } from '../lib/paletteExtractor';
 import { createSamplePhotoCanvas, SAMPLE_PHOTO_NAME } from '../lib/samplePhoto';
-import { trackPaletteExtracted, trackDownloadPalette } from '../lib/analytics';
+import {
+  trackPaletteExtracted,
+  trackDownloadPalette,
+  trackPaletteExported,
+  trackContrastChecked,
+  trackGradientCopied,
+} from '../lib/analytics';
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 const ALLOWED_MIME_TYPES = [
@@ -37,9 +55,25 @@ const ALLOWED_MIME_TYPES = [
   'image/svg+xml',
 ];
 
+interface MultiImageItem {
+  id: string;
+  name: string;
+  img: HTMLImageElement;
+  objectUrl: string;
+  palette: ColorSwatch[];
+}
+
+interface SavedPaletteItem {
+  id: string;
+  name: string;
+  hexes: string[];
+  swatches: ColorSwatch[];
+  date: string;
+}
+
 export default function ColorPaletteTool() {
   const [swatches, setSwatches] = useState<ColorSwatch[]>([]);
-  const [colorCount, setColorCount] = useState<3 | 5 | 8>(5);
+  const [colorCount, setColorCount] = useState<3 | 5 | 8 | 12>(5);
   const [imageTitle, setImageTitle] = useState<string>('');
   const [imageElement, setImageElement] = useState<HTMLImageElement | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -49,18 +83,61 @@ export default function ColorPaletteTool() {
   const [isDragging, setIsDragging] = useState(false);
   const [hoveredColor, setHoveredColor] = useState<string | null>(null);
 
+  // Phase 2: Multi-image mode
+  const [imageList, setImageList] = useState<MultiImageItem[]>([]);
+  const [activeImageIndex, setActiveImageIndex] = useState<number>(0);
+
+  // Phase 2: Gradient Builder
+  const [gradientAngle, setGradientAngle] = useState<number>(135);
+  const [gradientIndices, setGradientIndices] = useState<number[]>([0, 1]);
+
+  // Phase 2: Contrast Checker View Toggle
+  const [showContrast, setShowContrast] = useState<boolean>(true);
+
+  // Phase 2: Saved Palettes & Share
+  const [savedPalettes, setSavedPalettes] = useState<SavedPaletteItem[]>([]);
+  const [feedbackToast, setFeedbackToast] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
 
+  // Load saved palettes from localStorage on mount & handle URL hash
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('tools_saved_palettes');
+      if (stored) {
+        setSavedPalettes(JSON.parse(stored));
+      }
+    } catch (_) {}
+
+    // Check URL Hash for shared palette (#palette=HEX,HEX,HEX)
+    if (typeof window !== 'undefined' && window.location.hash) {
+      const match = window.location.hash.match(/#palette=([a-fA-F0-9,]+)/i);
+      if (match && match[1]) {
+        const hexList = match[1].split(',').filter(Boolean);
+        if (hexList.length >= 2) {
+          const restoredSwatches = hexList.map((rawHex, idx) => {
+            const cleanHex = rawHex.startsWith('#') ? rawHex : `#${rawHex}`;
+            const [r, g, b] = hexToRgb(cleanHex);
+            return createSwatchFromRgb(r, g, b, `hash-${idx}`);
+          });
+          setSwatches(restoredSwatches);
+          setImageTitle('Shared URL Palette');
+        }
+      }
+    }
+  }, []);
+
   // Clear copied notification after 2 seconds
   useEffect(() => {
-    if (!copiedId && !copiedAll) return;
+    if (!copiedId && !copiedAll && !feedbackToast) return;
     const timer = setTimeout(() => {
       setCopiedId(null);
       setCopiedAll(false);
-    }, 2000);
+      setFeedbackToast(null);
+    }, 2500);
     return () => clearTimeout(timer);
-  }, [copiedId, copiedAll]);
+  }, [copiedId, copiedAll, feedbackToast]);
 
   // Redraw preview canvas whenever imageElement changes
   useEffect(() => {
@@ -76,7 +153,7 @@ export default function ColorPaletteTool() {
   }, [imageElement]);
 
   const processImage = useCallback(
-    (img: HTMLImageElement, name: string, count: 3 | 5 | 8, isSample: boolean = false) => {
+    (img: HTMLImageElement, name: string, count: 3 | 5 | 8 | 12, isSample: boolean = false) => {
       setIsProcessing(true);
       setErrorMessage(null);
 
@@ -112,211 +189,75 @@ export default function ColorPaletteTool() {
     []
   );
 
-  const handleFile = useCallback(
-    (file: File) => {
+  // Multi-image processing handler (up to 10 images)
+  const handleProcessMultipleFiles = useCallback(
+    (files: FileList | File[]) => {
       setErrorMessage(null);
+      const fileArr = Array.from(files).slice(0, 10);
+      if (fileArr.length === 0) return;
 
-      // Validate size
-      if (file.size > MAX_FILE_SIZE_BYTES) {
-        setErrorMessage(
-          `File is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). Please select an image under 10 MB.`
-        );
-        return;
-      }
+      const loadedItems: MultiImageItem[] = [];
 
-      // Validate format
-      const isAllowedType =
-        ALLOWED_MIME_TYPES.includes(file.type) ||
-        /\.(jpe?g|png|webp|svg)$/i.test(file.name);
+      fileArr.forEach((file) => {
+        if (file.size > MAX_FILE_SIZE_BYTES) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const dataUrl = e.target?.result as string;
+          const img = new Image();
+          img.onload = () => {
+            const offscreen = document.createElement('canvas');
+            offscreen.width = img.naturalWidth || img.width || 800;
+            offscreen.height = img.naturalHeight || img.height || 600;
+            const ctx = offscreen.getContext('2d');
+            let pal: ColorSwatch[] = [];
+            if (ctx) {
+              ctx.drawImage(img, 0, 0, offscreen.width, offscreen.height);
+              pal = extractPaletteFromCanvas(offscreen, colorCount);
+            }
 
-      if (!isAllowedType) {
-        setErrorMessage(
-          'Unsupported file format. Please upload a JPG, PNG, WebP, or SVG image.'
-        );
-        return;
-      }
+            const item: MultiImageItem = {
+              id: `img-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+              name: file.name,
+              img,
+              objectUrl: dataUrl,
+              palette: pal,
+            };
 
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const dataUrl = e.target?.result as string;
-        const img = new Image();
-        img.onload = () => {
-          processImage(img, file.name, colorCount, false);
+            loadedItems.push(item);
+            if (loadedItems.length === fileArr.length) {
+              setImageList((prev) => [...prev, ...loadedItems].slice(0, 10));
+              if (loadedItems[0]) {
+                setImageElement(loadedItems[0].img);
+                setImageTitle(loadedItems[0].name);
+                setSwatches(loadedItems[0].palette);
+                setActiveImageIndex(0);
+              }
+            }
+          };
+          img.src = dataUrl;
         };
-        img.onerror = () => {
-          setErrorMessage('Could not load image file. The file may be corrupted.');
-        };
-        img.src = dataUrl;
-      };
-      reader.onerror = () => {
-        setErrorMessage('Failed to read image file.');
-      };
-      reader.readAsDataURL(file);
+        reader.readAsDataURL(file);
+      });
     },
-    [colorCount, processImage]
+    [colorCount]
   );
 
-  const handleColorCountChange = (newCount: 3 | 5 | 8) => {
-    setColorCount(newCount);
-    if (imageElement) {
-      processImage(imageElement, imageTitle, newCount, false);
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      if (e.target.files.length > 1) {
+        handleProcessMultipleFiles(e.target.files);
+      } else {
+        const file = e.target.files[0];
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const img = new Image();
+          img.onload = () => processImage(img, file.name, colorCount, false);
+          img.src = ev.target?.result as string;
+        };
+        reader.readAsDataURL(file);
+      }
+      e.target.value = '';
     }
-  };
-
-  const handleSampleClick = () => {
-    setIsProcessing(true);
-    setErrorMessage(null);
-
-    try {
-      const sampleCanvas = createSamplePhotoCanvas();
-      const dataUrl = sampleCanvas.toDataURL('image/png');
-      const img = new Image();
-      img.onload = () => {
-        processImage(img, SAMPLE_PHOTO_NAME, colorCount, true);
-      };
-      img.src = dataUrl;
-    } catch {
-      setErrorMessage('Could not generate sample photo.');
-      setIsProcessing(false);
-    }
-  };
-
-  // Click-to-pick from preview canvas
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = previewCanvasRef.current;
-    if (!canvas) return;
-
-    if (swatches.length >= 8) {
-      setErrorMessage('Maximum of 8 colors reached. Remove a swatch to add another.');
-      return;
-    }
-
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-
-    const x = Math.min(canvas.width - 1, Math.max(0, Math.floor((e.clientX - rect.left) * scaleX)));
-    const y = Math.min(canvas.height - 1, Math.max(0, Math.floor((e.clientY - rect.top) * scaleY)));
-
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return;
-
-    const pixel = ctx.getImageData(x, y, 1, 1).data;
-    if (pixel[3] < 30) {
-      setErrorMessage('Clicked on a transparent area. Please click on a visible colored pixel.');
-      return;
-    }
-
-    const r = pixel[0];
-    const g = pixel[1];
-    const b = pixel[2];
-    const hex = rgbToHex(r, g, b);
-
-    // If color already exists, highlight it
-    const existing = swatches.find((s) => s.hex.toLowerCase() === hex.toLowerCase());
-    if (existing) {
-      handleCopy(existing.hex, existing.id);
-      return;
-    }
-
-    const lum = getLuminance(r, g, b);
-    const newSwatch: ColorSwatch = {
-      id: `picked-${Date.now()}-${hex}`,
-      hex,
-      rgb: [r, g, b],
-      rgbString: `rgb(${r}, ${g}, ${b})`,
-      luminance: lum,
-      textColor: getContrastTextColor(r, g, b),
-      isPicked: true,
-    };
-
-    setSwatches((prev) => [...prev, newSwatch]);
-    setCopiedId(newSwatch.id);
-  };
-
-  const handleCopy = (text: string, id: string) => {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(text);
-    } else {
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-    }
-    setCopiedId(id);
-  };
-
-  const handleCopyAll = () => {
-    if (swatches.length === 0) return;
-    const allHex = swatches.map((s) => s.hex).join(', ');
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(allHex);
-    } else {
-      const textarea = document.createElement('textarea');
-      textarea.value = allHex;
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-    }
-    setCopiedAll(true);
-  };
-
-  const handleDownloadPng = async () => {
-    if (swatches.length === 0) return;
-    try {
-      const blob = await generatePalettePng(swatches, imageTitle || 'Color Palette');
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `color-palette-${Date.now()}.png`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      trackDownloadPalette({
-        format: 'png',
-        colors_count: swatches.length,
-      });
-    } catch {
-      setErrorMessage('Failed to generate PNG palette strip.');
-    }
-  };
-
-  const handleDownloadTxt = () => {
-    if (swatches.length === 0) return;
-    try {
-      const text = generatePaletteTxt(swatches);
-      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `color-palette-${Date.now()}.txt`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      trackDownloadPalette({
-        format: 'txt',
-        colors_count: swatches.length,
-      });
-    } catch {
-      setErrorMessage('Failed to generate TXT file.');
-    }
-  };
-
-  const handleRemoveSwatch = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    if (swatches.length <= 2) {
-      setErrorMessage('At least 2 colors are needed in the palette.');
-      return;
-    }
-    setSwatches((prev) => prev.filter((s) => s.id !== id));
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -333,373 +274,691 @@ export default function ColorPaletteTool() {
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFile(e.dataTransfer.files[0]);
+      if (e.dataTransfer.files.length > 1) {
+        handleProcessMultipleFiles(e.dataTransfer.files);
+      } else {
+        const file = e.dataTransfer.files[0];
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const img = new Image();
+          img.onload = () => processImage(img, file.name, colorCount, false);
+          img.src = ev.target?.result as string;
+        };
+        reader.readAsDataURL(file);
+      }
     }
   };
 
-  const handleReset = () => {
-    setSwatches([]);
-    setImageElement(null);
-    setImageTitle('');
-    setErrorMessage(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+  const handleLoadSample = () => {
+    const sampleCanvas = createSamplePhotoCanvas();
+    const dataUrl = sampleCanvas.toDataURL('image/jpeg', 0.9);
+    const img = new Image();
+    img.onload = () => {
+      processImage(img, SAMPLE_PHOTO_NAME, colorCount, true);
+    };
+    img.src = dataUrl;
+  };
+
+  const handleCountChange = (count: 3 | 5 | 8 | 12) => {
+    setColorCount(count);
+    if (imageElement) {
+      processImage(imageElement, imageTitle, count, false);
     }
   };
+
+  const handleCopySingle = (hex: string, id: string) => {
+    navigator.clipboard.writeText(hex);
+    setCopiedId(id);
+  };
+
+  // Copy CSS Variables
+  const handleCopyCssVariables = () => {
+    if (swatches.length === 0) return;
+    const css = generateCssVariablesCode(swatches);
+    navigator.clipboard.writeText(css);
+    trackPaletteExported('css', swatches.length);
+    setFeedbackToast('CSS variables copied to clipboard!');
+  };
+
+  // Copy Tailwind Config
+  const handleCopyTailwind = () => {
+    if (swatches.length === 0) return;
+    const tailwind = generateTailwindConfigCode(swatches);
+    navigator.clipboard.writeText(tailwind);
+    trackPaletteExported('tailwind', swatches.length);
+    setFeedbackToast('Tailwind config snippet copied to clipboard!');
+  };
+
+  // Download JSON
+  const handleDownloadJson = () => {
+    if (swatches.length === 0) return;
+    const jsonStr = generateJsonCode(swatches);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${imageTitle.replace(/\.[^/.]+$/, '') || 'palette'}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    trackPaletteExported('json', swatches.length);
+    setFeedbackToast('Downloaded JSON palette!');
+  };
+
+  // Download PNG Strip
+  const handleDownloadPng = async () => {
+    if (swatches.length === 0) return;
+    try {
+      const blob = await generatePalettePng(swatches, imageTitle);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${imageTitle.replace(/\.[^/.]+$/, '') || 'palette'}-swatches.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+      trackDownloadPalette({ format: 'png', colors_count: swatches.length });
+    } catch (_) {}
+  };
+
+  // Download TXT
+  const handleDownloadTxt = () => {
+    if (swatches.length === 0) return;
+    const text = generatePaletteTxt(swatches, imageTitle);
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${imageTitle.replace(/\.[^/.]+$/, '') || 'palette'}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    trackDownloadPalette({ format: 'txt', colors_count: swatches.length });
+  };
+
+  // Save palette to localStorage
+  const handleSavePalette = () => {
+    if (swatches.length === 0) return;
+    const newEntry: SavedPaletteItem = {
+      id: `pal-${Date.now()}`,
+      name: imageTitle || `Palette #${savedPalettes.length + 1}`,
+      hexes: swatches.map((s) => s.hex),
+      swatches: [...swatches],
+      date: new Date().toISOString().split('T')[0],
+    };
+    const updated = [newEntry, ...savedPalettes.slice(0, 19)];
+    setSavedPalettes(updated);
+    try {
+      localStorage.setItem('tools_saved_palettes', JSON.stringify(updated));
+    } catch (_) {}
+    setFeedbackToast('Palette saved to browser storage!');
+  };
+
+  const handleLoadSavedPalette = (item: SavedPaletteItem) => {
+    setSwatches(item.swatches);
+    setImageTitle(item.name);
+    setFeedbackToast(`Loaded "${item.name}"`);
+  };
+
+  const handleDeleteSavedPalette = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const updated = savedPalettes.filter((p) => p.id !== id);
+    setSavedPalettes(updated);
+    try {
+      localStorage.setItem('tools_saved_palettes', JSON.stringify(updated));
+    } catch (_) {}
+  };
+
+  // Share link with URL hash
+  const handleCopyShareLink = () => {
+    if (swatches.length === 0) return;
+    const hexParam = swatches.map((s) => s.hex.replace('#', '')).join(',');
+    const shareUrl = `${window.location.origin}${window.location.pathname}#palette=${hexParam}`;
+    navigator.clipboard.writeText(shareUrl);
+    setFeedbackToast('Shareable URL copied! Opening this link restores your palette.');
+  };
+
+  // Gradient Builder CSS
+  const activeGradientColors = gradientIndices
+    .map((idx) => swatches[idx]?.hex)
+    .filter(Boolean);
+  const gradientCss =
+    activeGradientColors.length >= 2
+      ? `linear-gradient(${gradientAngle}deg, ${activeGradientColors.join(', ')})`
+      : 'linear-gradient(135deg, #5846F6, #D4FF3A)';
+
+  const handleCopyGradient = () => {
+    const cssRule = `background: ${gradientCss};`;
+    navigator.clipboard.writeText(cssRule);
+    trackGradientCopied(cssRule, activeGradientColors.length);
+    setFeedbackToast('Gradient CSS rule copied to clipboard!');
+  };
+
+  // Harmony Suggestions based on primary/first swatch
+  const primarySwatch = swatches[0];
+  const harmonies = primarySwatch ? generateHarmonies(primarySwatch) : null;
 
   return (
-    <div className="w-full">
-      {/* Error notification banner */}
+    <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 space-y-8">
+      {/* Hidden File Input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept=".jpg,.jpeg,.png,.webp,.svg,image/jpeg,image/png,image/webp,image/svg+xml"
+        className="hidden"
+        onChange={handleFileChange}
+      />
+
+      {/* Hero Header */}
+      <div className="text-center space-y-4">
+        <div className="inline-flex items-center gap-2 rounded-full bg-[#5846F6]/10 px-3.5 py-1 text-xs font-bold text-[#5846F6] border border-[#5846F6]/20">
+          <Sparkles className="h-3.5 w-3.5" />
+          <span>Phase 2 Enhanced • WCAG Contrast • Gradient Builder • 100% Free</span>
+        </div>
+        <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight text-[#0B0B0D]">
+          Color Palette Extractor & Harmony Kit
+        </h1>
+        <p className="max-w-2xl mx-auto text-sm sm:text-base text-[#4F4E55] leading-relaxed">
+          Extract 3, 5, 8, or 12 harmonious color swatches from any photo. Copy CSS variables,
+          Tailwind snippets, check WCAG contrast, and build CSS gradients in seconds.
+        </p>
+      </div>
+
+      {/* Notifications */}
       {errorMessage && (
-        <div
-          role="alert"
-          className="mb-6 flex items-start justify-between rounded-2xl border border-red-200 bg-red-50/90 p-4 text-red-900 shadow-sm"
-        >
-          <div className="flex items-center gap-3">
-            <AlertCircle className="h-5 w-5 shrink-0 text-red-600" />
-            <p className="text-sm font-medium">{errorMessage}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setErrorMessage(null)}
-            className="rounded-lg p-1 text-red-600 hover:bg-red-100 transition-colors"
-            aria-label="Dismiss error"
-          >
+        <div className="flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-xs sm:text-sm text-rose-800">
+          <AlertCircle className="h-5 w-5 shrink-0 text-rose-600 mt-0.5" />
+          <div className="flex-1 font-semibold">{errorMessage}</div>
+          <button onClick={() => setErrorMessage(null)} className="text-rose-500">
             <X className="h-4 w-4" />
           </button>
         </div>
       )}
 
-      {/* Main Tool Container */}
-      {!imageElement ? (
-        /* Empty Upload State */
-        <div className="rounded-3xl border border-[#E5E1D6] bg-white p-6 sm:p-10 shadow-sm">
+      {feedbackToast && (
+        <div className="flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-xs sm:text-sm text-emerald-900 shadow-xs">
+          <Check className="h-5 w-5 shrink-0 text-emerald-600 mt-0.5" />
+          <div className="flex-1 font-semibold">{feedbackToast}</div>
+        </div>
+      )}
+
+      {/* MAIN WORKSPACE */}
+      <div className="rounded-3xl border border-[#C9C7C1] bg-white p-5 sm:p-7 md:p-8 shadow-xs space-y-8">
+        {/* Upload Zone */}
+        {swatches.length === 0 ? (
           <div
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`cursor-pointer rounded-2xl border-2 border-dashed p-8 sm:p-14 text-center transition-all ${
+            className={`rounded-2xl border-2 border-dashed p-8 sm:p-12 text-center transition-all ${
               isDragging
-                ? 'border-[#1F8C7F] bg-[#EBF7F5]'
-                : 'border-[#E5E1D6] hover:border-[#1F8C7F] hover:bg-[#F4F2EC]/50'
+                ? "border-[#5846F6] bg-[#5846F6]/5 scale-[1.01]"
+                : "border-[#C9C7C1] bg-[#F4F2EC]/40 hover:bg-[#F4F2EC] hover:border-[#5846F6]"
             }`}
           >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".jpg,.jpeg,.png,.webp,.svg,image/jpeg,image/png,image/webp,image/svg+xml"
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files && e.target.files.length > 0) {
-                  handleFile(e.target.files[0]);
-                }
-              }}
-            />
-
-            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-[#F4F2EC] text-[#1F8C7F] mb-5 shadow-2xs">
-              <UploadCloud className="h-8 w-8" />
-            </div>
-
-            <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-[#0B0B0D]">
-              Drop your photo, illustration, or logo here
-            </h3>
-            <p className="mt-2 text-sm text-[#4F4E55] max-w-md mx-auto">
-              Supports <strong className="text-[#0B0B0D]">JPG, PNG, WebP</strong> and{' '}
-              <strong className="text-[#0B0B0D]">SVG</strong> up to 10 MB.
-            </p>
-
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  fileInputRef.current?.click();
-                }}
-                className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-[#0B0B0D] hover:bg-[#1F8C7F] text-white px-6 py-2.5 text-sm font-semibold transition-all shadow-sm"
-              >
-                Browse Image
-              </button>
-
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleSampleClick();
-                }}
-                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-[#E5E1D6] bg-white hover:bg-[#F4F2EC] px-5 py-2.5 text-sm font-semibold text-[#0B0B0D] transition-all shadow-2xs"
-              >
-                <Sparkles className="h-4 w-4 text-[#1F8C7F]" />
-                Try a sample photo
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : (
-        /* Workspace State with Image & Palette */
-        <div className="space-y-8">
-          {/* Top Bar: Title & Change Image */}
-          <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[#E5E1D6] bg-white p-4 sm:p-5 shadow-2xs">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#F4F2EC] text-[#1F8C7F]">
-                <ImageIcon className="h-5 w-5" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-sm font-bold text-[#0B0B0D] truncate">
-                  {imageTitle || 'Uploaded Image'}
-                </p>
-                <p className="text-xs text-[#4F4E55]">
-                  Processed 100% in your browser • Click on image to sample colors
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-[#E5E1D6] bg-white hover:bg-[#F4F2EC] px-3.5 py-2 text-xs font-semibold text-[#0B0B0D] transition-all"
-              >
-                <RefreshCw className="h-3.5 w-3.5 text-[#4F4E55]" />
-                Change Image
-              </button>
-              <button
-                type="button"
-                onClick={handleReset}
-                className="inline-flex min-h-[40px] items-center justify-center rounded-xl border border-[#E5E1D6] bg-white hover:bg-red-50 hover:text-red-700 hover:border-red-200 px-3 py-2 text-xs font-semibold text-[#4F4E55] transition-all"
-                aria-label="Remove image and reset"
-              >
-                <X className="h-4 w-4" />
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".jpg,.jpeg,.png,.webp,.svg,image/jpeg,image/png,image/webp,image/svg+xml"
-                className="hidden"
-                onChange={(e) => {
-                  if (e.target.files && e.target.files.length > 0) {
-                    handleFile(e.target.files[0]);
-                  }
-                }}
-              />
-            </div>
-          </div>
-
-          {/* Controls Bar: Palette Count Selection & Actions */}
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 rounded-2xl border border-[#E5E1D6] bg-[#F4F2EC] p-4 sm:p-5">
-            {/* Color Count Toggle (3, 5, 8) */}
-            <div className="flex items-center gap-3">
-              <span className="text-xs font-mono uppercase tracking-wider text-[#4F4E55] font-semibold">
-                Colors:
-              </span>
-              <div className="inline-flex rounded-xl border border-[#E5E1D6] bg-white p-1 shadow-2xs">
-                {([3, 5, 8] as const).map((count) => (
-                  <button
-                    key={count}
-                    type="button"
-                    onClick={() => handleColorCountChange(count)}
-                    className={`min-h-[36px] min-w-[44px] rounded-lg px-3 text-xs font-bold transition-all ${
-                      colorCount === count
-                        ? 'bg-[#0B0B0D] text-white shadow-xs'
-                        : 'text-[#4F4E55] hover:text-[#0B0B0D]'
-                    }`}
-                  >
-                    {count} {count === 5 ? '(Default)' : ''}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Batch Actions */}
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleCopyAll}
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-[#E5E1D6] bg-white hover:bg-[#F4F2EC] px-3.5 py-2 text-xs font-semibold text-[#0B0B0D] transition-all shadow-2xs"
-              >
-                {copiedAll ? (
-                  <>
-                    <Check className="h-4 w-4 text-emerald-600" />
-                    <span>Copied All!</span>
-                  </>
+            <div className="max-w-md mx-auto space-y-4">
+              <div className="flex h-16 w-16 mx-auto items-center justify-center rounded-2xl bg-white text-[#5846F6] shadow-xs border border-[#C9C7C1]">
+                {isProcessing ? (
+                  <RefreshCw className="h-8 w-8 animate-spin" />
                 ) : (
-                  <>
-                    <Copy className="h-4 w-4 text-[#4F4E55]" />
-                    <span>Copy All HEX</span>
-                  </>
+                  <UploadCloud className="h-8 w-8" />
                 )}
-              </button>
+              </div>
 
-              <button
-                type="button"
-                onClick={handleDownloadPng}
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0B0B0D] hover:bg-[#1F8C7F] text-white px-4 py-2 text-xs font-bold transition-all shadow-sm"
-              >
-                <Download className="h-4 w-4" />
-                <span>Download PNG Strip</span>
-              </button>
+              <div className="space-y-1">
+                <p className="text-base sm:text-lg font-bold text-[#0B0B0D]">
+                  Drag and drop your image(s) here
+                </p>
+                <p className="text-xs sm:text-sm text-[#4F4E55]">
+                  Accepts JPG, PNG, WebP, SVG up to 10 MB • Drop up to 10 images at once
+                </p>
+              </div>
 
-              <button
-                type="button"
-                onClick={handleDownloadTxt}
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-[#E5E1D6] bg-white hover:bg-[#F4F2EC] px-3.5 py-2 text-xs font-semibold text-[#0B0B0D] transition-all shadow-2xs"
-              >
-                <FileText className="h-4 w-4 text-[#4F4E55]" />
-                <span>Download TXT</span>
-              </button>
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full bg-[#5846F6] hover:bg-[#4735E2] text-white px-6 py-3 text-sm font-bold transition-all shadow-md cursor-pointer"
+                >
+                  <UploadCloud className="h-4 w-4" />
+                  <span>Browse Images</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleLoadSample}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full border border-[#C9C7C1] bg-white hover:bg-[#F4F2EC] text-[#0B0B0D] px-5 py-3 text-sm font-semibold transition-all shadow-2xs"
+                >
+                  <Sparkles className="h-4 w-4 text-[#5846F6]" />
+                  <span>Try a sample photo</span>
+                </button>
+              </div>
             </div>
           </div>
+        ) : (
+          /* ACTIVE PALETTE VIEW */
+          <div className="space-y-8">
+            {/* Top Toolbar: Swatch Count & Multi-Image Strip */}
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#C9C7C1] pb-4">
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-bold uppercase tracking-wider text-[#4F4E55]">
+                  Swatch Count:
+                </span>
+                <div className="flex items-center gap-1 bg-[#F4F2EC] p-1 rounded-xl border border-[#C9C7C1]/60">
+                  {([3, 5, 8, 12] as (3 | 5 | 8 | 12)[]).map((cnt) => (
+                    <button
+                      key={cnt}
+                      type="button"
+                      onClick={() => handleCountChange(cnt)}
+                      className={`px-3 py-1 text-xs font-bold rounded-lg transition-all ${
+                        colorCount === cnt
+                          ? "bg-[#5846F6] text-white shadow-xs"
+                          : "text-[#4F4E55] hover:text-[#0B0B0D]"
+                      }`}
+                    >
+                      {cnt} Colors
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-          {/* Swatches Display Grid */}
-          <div>
-            <div className="flex items-center justify-between mb-3 px-1">
-              <h4 className="text-sm font-bold text-[#0B0B0D]">
-                Extracted Palette ({swatches.length} colors)
-              </h4>
-              <span className="text-xs text-[#4F4E55]">
-                Click any swatch or HEX code to copy
-              </span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[#C9C7C1] bg-white px-3.5 py-1.5 text-xs font-bold text-[#0B0B0D] hover:bg-[#F4F2EC]"
+                >
+                  <UploadCloud className="h-3.5 w-3.5 text-[#5846F6]" />
+                  <span>New Image</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSavePalette}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[#C9C7C1] bg-white px-3.5 py-1.5 text-xs font-bold text-[#0B0B0D] hover:bg-[#F4F2EC]"
+                >
+                  <Bookmark className="h-3.5 w-3.5 text-[#5846F6]" />
+                  <span>Save Palette</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCopyShareLink}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[#C9C7C1] bg-white px-3.5 py-1.5 text-xs font-bold text-[#0B0B0D] hover:bg-[#F4F2EC]"
+                >
+                  <Share2 className="h-3.5 w-3.5 text-[#5846F6]" />
+                  <span>Share URL</span>
+                </button>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
-              {swatches.map((swatch) => {
-                const isCopied = copiedId === swatch.id;
-                return (
-                  <div
-                    key={swatch.id}
-                    onClick={() => handleCopy(swatch.hex, swatch.id)}
-                    className="group relative cursor-pointer overflow-hidden rounded-2xl border border-[#E5E1D6] bg-white shadow-2xs transition-all hover:scale-[1.02] hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#1F8C7F]"
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Copy color ${swatch.hex}`}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        handleCopy(swatch.hex, swatch.id);
-                      }
-                    }}
-                  >
-                    {/* Color Swatch Block */}
-                    <div
-                      className="relative h-28 sm:h-36 w-full transition-transform"
-                      style={{ backgroundColor: swatch.hex }}
+            {/* Multi-Image Switcher Strip if > 1 loaded */}
+            {imageList.length > 1 && (
+              <div className="p-3 bg-[#F4F2EC] rounded-2xl border border-[#C9C7C1] space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold text-[#0B0B0D]">
+                  <span className="flex items-center gap-1.5">
+                    <Layers className="h-3.5 w-3.5 text-[#5846F6]" />
+                    <span>Multi-Image Mode ({imageList.length} images)</span>
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                  {imageList.map((item, idx) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        setActiveImageIndex(idx);
+                        setImageElement(item.img);
+                        setImageTitle(item.name);
+                        setSwatches(item.palette);
+                      }}
+                      className={`flex items-center gap-2 rounded-xl p-1.5 text-xs font-semibold shrink-0 transition-all border ${
+                        idx === activeImageIndex
+                          ? "border-[#5846F6] bg-white text-[#5846F6] ring-2 ring-[#5846F6]/20 shadow-xs"
+                          : "border-[#C9C7C1] bg-white/70 text-[#4F4E55] hover:bg-white"
+                      }`}
                     >
-                      {/* Badge if light, dark, or user-picked */}
-                      {(swatch.isLight || swatch.isDark || swatch.isPicked) && (
+                      <img
+                        src={item.objectUrl}
+                        alt={item.name}
+                        className="h-7 w-7 object-cover rounded-md"
+                      />
+                      <span className="max-w-[100px] truncate">{item.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* BIG PALETTE STRIP SWATCHES */}
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 gap-3">
+                {swatches.map((swatch, idx) => {
+                  const isCopied = copiedId === swatch.id;
+                  const contrast = getWcagContrast(swatch.rgb[0], swatch.rgb[1], swatch.rgb[2]);
+
+                  return (
+                    <div
+                      key={swatch.id}
+                      className="rounded-2xl border border-[#C9C7C1] bg-white overflow-hidden shadow-2xs group transition-all hover:shadow-md"
+                    >
+                      {/* Color block */}
+                      <div
+                        onClick={() => handleCopySingle(swatch.hex, swatch.id)}
+                        className="relative h-28 w-full cursor-pointer flex items-center justify-center transition-transform group-hover:scale-[1.02]"
+                        style={{ backgroundColor: swatch.hex }}
+                      >
                         <span
-                          className="absolute top-2.5 left-2.5 z-10 rounded-md px-1.5 py-0.5 text-[10px] font-mono font-bold uppercase tracking-wider backdrop-blur-md shadow-2xs pointer-events-none"
+                          className="opacity-0 group-hover:opacity-100 transition-opacity px-2.5 py-1 rounded-full text-[11px] font-bold shadow-xs flex items-center gap-1"
                           style={{
-                            backgroundColor:
-                              swatch.luminance > 0.6
-                                ? 'rgba(0,0,0,0.65)'
-                                : 'rgba(255,255,255,0.85)',
-                            color:
-                              swatch.luminance > 0.6 ? '#FFFFFF' : '#0B0B0D',
+                            backgroundColor: swatch.textColor === '#FFFFFF' ? '#0B0B0D' : '#FFFFFF',
+                            color: swatch.textColor === '#FFFFFF' ? '#FFFFFF' : '#0B0B0D',
                           }}
                         >
-                          {swatch.isPicked
-                            ? 'PICKED'
-                            : swatch.isLight
-                            ? 'LIGHT'
-                            : 'DARK'}
+                          {isCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                          <span>{isCopied ? 'Copied' : 'Copy'}</span>
                         </span>
-                      )}
+                      </div>
 
-                      {/* Remove swatch button */}
-                      {swatches.length > 2 && (
-                        <button
-                          type="button"
-                          onClick={(e) => handleRemoveSwatch(swatch.id, e)}
-                          className="absolute top-2 right-2 z-20 flex h-6 w-6 items-center justify-center rounded-full bg-black/65 hover:bg-rose-600 text-white transition-all opacity-80 sm:opacity-0 sm:group-hover:opacity-100 hover:scale-110 shadow-sm cursor-pointer"
-                          aria-label={`Remove color ${swatch.hex}`}
-                          title="Remove color from palette"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      )}
-
-                      {/* Hover / Click Copy Overlay */}
-                      <div className="absolute inset-0 z-10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/25 pointer-events-none">
-                        <div
-                          className="rounded-full px-3 py-1 text-xs font-bold shadow-md flex items-center gap-1.5 pointer-events-auto"
-                          style={{
-                            backgroundColor: swatch.textColor,
-                            color:
-                              swatch.textColor === '#FFFFFF'
-                                ? '#0B0B0D'
-                                : '#FFFFFF',
-                          }}
-                        >
-                          {isCopied ? (
-                            <>
-                              <Check className="h-3.5 w-3.5 text-emerald-600" />
-                              <span>Copied!</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="h-3.5 w-3.5" />
-                              <span>Copy HEX</span>
-                            </>
-                          )}
+                      {/* Info & Contrast metrics */}
+                      <div className="p-3 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-xs font-bold text-[#0B0B0D]">
+                            {swatch.hex}
+                          </span>
+                          <span className="text-[10px] text-[#4F4E55]">
+                            #{idx + 1}
+                          </span>
                         </div>
+
+                        {/* WCAG Contrast Badge */}
+                        {showContrast && (
+                          <div className="pt-2 border-t border-[#C9C7C1]/40 flex items-center justify-between text-[10px]">
+                            <span
+                              className={`px-1.5 py-0.5 rounded font-bold ${
+                                contrast.aaWhite
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : 'bg-neutral-100 text-neutral-600'
+                              }`}
+                              title={`Contrast vs White: ${contrast.ratioWhite}:1`}
+                            >
+                              W: {contrast.ratioWhite}:1 {contrast.aaWhite ? 'AA' : ''}
+                            </span>
+                            <span
+                              className={`px-1.5 py-0.5 rounded font-bold ${
+                                contrast.aaBlack
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : 'bg-neutral-100 text-neutral-600'
+                              }`}
+                              title={`Contrast vs Black: ${contrast.ratioBlack}:1`}
+                            >
+                              B: {contrast.ratioBlack}:1 {contrast.aaBlack ? 'AA' : ''}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </div>
+                  );
+                })}
+              </div>
+            </div>
 
-                    {/* Color Metadata Details */}
-                    <div className="p-3 sm:p-4 text-center">
-                      <p className="font-mono text-sm sm:text-base font-bold text-[#0B0B0D] tracking-wide">
-                        {swatch.hex}
-                      </p>
-                      <p className="font-mono text-[11px] sm:text-xs text-[#4F4E55] mt-0.5 truncate">
-                        {swatch.rgbString}
-                      </p>
-                      {isCopied && (
-                        <p className="mt-1 font-mono text-[11px] font-bold text-emerald-600 animate-pulse">
-                          Copied to clipboard
-                        </p>
-                      )}
+            {/* CODE EXPORT TOOLBAR */}
+            <div className="rounded-2xl border border-[#C9C7C1] bg-[#F4F2EC] p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3">
+              <span className="text-xs font-bold uppercase tracking-wider text-[#0B0B0D] flex items-center gap-1.5">
+                <Code className="h-4 w-4 text-[#5846F6]" />
+                <span>Phase 2 Code Exports:</span>
+              </span>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={handleCopyCssVariables}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#C9C7C1] bg-white px-3 py-1.5 text-xs font-bold text-[#0B0B0D] hover:border-[#5846F6] hover:text-[#5846F6] transition-all shadow-2xs"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  <span>Copy CSS Variables</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCopyTailwind}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#C9C7C1] bg-white px-3 py-1.5 text-xs font-bold text-[#0B0B0D] hover:border-[#5846F6] hover:text-[#5846F6] transition-all shadow-2xs"
+                >
+                  <Code className="h-3.5 w-3.5" />
+                  <span>Copy Tailwind Config</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadJson}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#C9C7C1] bg-white px-3 py-1.5 text-xs font-bold text-[#0B0B0D] hover:border-[#5846F6] hover:text-[#5846F6] transition-all shadow-2xs"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span>Download JSON</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadPng}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#C9C7C1] bg-white px-3 py-1.5 text-xs font-bold text-[#0B0B0D] hover:border-[#5846F6] hover:text-[#5846F6] transition-all shadow-2xs"
+                >
+                  <ImageIcon className="h-3.5 w-3.5" />
+                  <span>PNG Strip</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadTxt}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#C9C7C1] bg-white px-3 py-1.5 text-xs font-bold text-[#0B0B0D] hover:border-[#5846F6] hover:text-[#5846F6] transition-all shadow-2xs"
+                >
+                  <FileText className="h-3.5 w-3.5" />
+                  <span>Palette TXT</span>
+                </button>
+              </div>
+            </div>
+
+            {/* GRADIENT BUILDER (Phase 2) */}
+            <div className="rounded-3xl border border-[#C9C7C1] bg-white p-6 space-y-4 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-extrabold text-[#0B0B0D] flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-[#5846F6]" />
+                    <span>Gradient Builder</span>
+                  </h3>
+                  <p className="text-xs text-[#4F4E55]">
+                    Build multi-stop CSS gradients from your extracted colors.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleCopyGradient}
+                  className="inline-flex items-center gap-2 rounded-full bg-[#5846F6] hover:bg-[#4735E2] text-white px-4 py-2 text-xs font-bold shadow-md transition-all self-start sm:self-center"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  <span>Copy CSS Gradient</span>
+                </button>
+              </div>
+
+              {/* Live Gradient Preview Bar */}
+              <div
+                className="h-16 w-full rounded-2xl shadow-inner border border-[#C9C7C1] transition-all"
+                style={{ background: gradientCss }}
+              />
+
+              {/* Controls: Swatch Selector & Angle Slider */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center pt-2">
+                <div>
+                  <label className="text-xs font-bold text-[#4F4E55] block mb-2">
+                    Pick 2 or 3 Gradient Colors:
+                  </label>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {swatches.map((swatch, idx) => {
+                      const isPicked = gradientIndices.includes(idx);
+                      return (
+                        <button
+                          key={swatch.id}
+                          type="button"
+                          onClick={() => {
+                            if (isPicked) {
+                              if (gradientIndices.length > 2) {
+                                setGradientIndices(gradientIndices.filter((i) => i !== idx));
+                              }
+                            } else {
+                              if (gradientIndices.length < 3) {
+                                setGradientIndices([...gradientIndices, idx]);
+                              } else {
+                                setGradientIndices([gradientIndices[1], idx]);
+                              }
+                            }
+                          }}
+                          className={`h-7 w-7 rounded-full border-2 transition-transform ${
+                            isPicked
+                              ? 'scale-110 border-[#5846F6] ring-2 ring-[#5846F6]/30 shadow-xs'
+                              : 'border-white opacity-70 hover:opacity-100'
+                          }`}
+                          style={{ backgroundColor: swatch.hex }}
+                          title={`Color ${idx + 1}: ${swatch.hex}`}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex justify-between text-xs text-[#4F4E55] mb-1">
+                    <span>Angle: <strong>{gradientAngle}°</strong></span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="360"
+                    value={gradientAngle}
+                    onChange={(e) => setGradientAngle(Number(e.target.value))}
+                    className="w-full h-1.5 rounded-lg bg-neutral-200 accent-[#5846F6] cursor-pointer"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* HARMONY SUGGESTIONS (Phase 2) */}
+            {harmonies && (
+              <div className="rounded-3xl border border-[#C9C7C1] bg-white p-6 space-y-4 shadow-xs">
+                <div>
+                  <h3 className="text-base font-extrabold text-[#0B0B0D]">
+                    Color Harmony Suggestions
+                  </h3>
+                  <p className="text-xs text-[#4F4E55]">
+                    Generated from your primary color ({primarySwatch.hex}). Click any mini-palette to load into active view.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {/* Complementary */}
+                  <div
+                    onClick={() => {
+                      setSwatches(harmonies.complementary);
+                      setFeedbackToast('Loaded Complementary harmony palette!');
+                    }}
+                    className="cursor-pointer rounded-2xl border border-[#C9C7C1] p-4 hover:border-[#5846F6] transition-all bg-[#F4F2EC]/40 space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-[#0B0B0D]">Complementary</span>
+                      <span className="text-[10px] text-[#5846F6] font-semibold">Load</span>
+                    </div>
+                    <div className="h-10 w-full rounded-xl overflow-hidden flex shadow-2xs">
+                      {harmonies.complementary.map((s, i) => (
+                        <div key={i} className="flex-1 h-full" style={{ backgroundColor: s.hex }} />
+                      ))}
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          </div>
 
-          {/* Interactive Image Preview with Eyedropper Sampling */}
-          <div className="rounded-3xl border border-[#E5E1D6] bg-white p-5 sm:p-8 shadow-sm">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4 pb-3 border-b border-[#E5E1D6]">
-              <div className="flex items-center gap-2">
-                <Pipette className="h-4 w-4 text-[#1F8C7F]" />
-                <h4 className="text-sm font-bold text-[#0B0B0D]">
-                  Interactive Image Preview
-                </h4>
+                  {/* Analogous */}
+                  <div
+                    onClick={() => {
+                      setSwatches(harmonies.analogous);
+                      setFeedbackToast('Loaded Analogous harmony palette!');
+                    }}
+                    className="cursor-pointer rounded-2xl border border-[#C9C7C1] p-4 hover:border-[#5846F6] transition-all bg-[#F4F2EC]/40 space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-[#0B0B0D]">Analogous</span>
+                      <span className="text-[10px] text-[#5846F6] font-semibold">Load</span>
+                    </div>
+                    <div className="h-10 w-full rounded-xl overflow-hidden flex shadow-2xs">
+                      {harmonies.analogous.map((s, i) => (
+                        <div key={i} className="flex-1 h-full" style={{ backgroundColor: s.hex }} />
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Triadic */}
+                  <div
+                    onClick={() => {
+                      setSwatches(harmonies.triadic);
+                      setFeedbackToast('Loaded Triadic harmony palette!');
+                    }}
+                    className="cursor-pointer rounded-2xl border border-[#C9C7C1] p-4 hover:border-[#5846F6] transition-all bg-[#F4F2EC]/40 space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-[#0B0B0D]">Triadic</span>
+                      <span className="text-[10px] text-[#5846F6] font-semibold">Load</span>
+                    </div>
+                    <div className="h-10 w-full rounded-xl overflow-hidden flex shadow-2xs">
+                      {harmonies.triadic.map((s, i) => (
+                        <div key={i} className="flex-1 h-full" style={{ backgroundColor: s.hex }} />
+                      ))}
+                    </div>
+                  </div>
+                </div>
               </div>
-              <p className="text-xs text-[#4F4E55]">
-                Click anywhere on the image to pick a custom pixel swatch (up to 8 total)
-              </p>
-            </div>
+            )}
 
-            {/* Canvas Viewer */}
-            <div className="relative mx-auto max-w-full overflow-hidden rounded-2xl border border-[#E5E1D6] bg-transparency-grid flex items-center justify-center p-2">
-              <canvas
-                ref={previewCanvasRef}
-                onClick={handleCanvasClick}
-                className="max-h-[500px] w-auto max-w-full cursor-crosshair rounded-lg object-contain transition-transform"
-                title="Click anywhere to pick color swatch"
-              />
-            </div>
+            {/* SAVED PALETTES TRAY (Phase 2) */}
+            {savedPalettes.length > 0 && (
+              <div className="rounded-3xl border border-[#C9C7C1] bg-[#F4F2EC] p-6 space-y-3">
+                <span className="text-xs font-bold uppercase tracking-wider text-[#0B0B0D] flex items-center gap-1.5">
+                  <Bookmark className="h-4 w-4 text-[#5846F6]" />
+                  <span>Saved Palettes ({savedPalettes.length})</span>
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  {savedPalettes.map((item) => (
+                    <div
+                      key={item.id}
+                      onClick={() => handleLoadSavedPalette(item)}
+                      className="cursor-pointer rounded-2xl bg-white border border-[#C9C7C1] p-3 flex items-center justify-between gap-3 hover:border-[#5846F6] shadow-2xs"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-[#0B0B0D] truncate">{item.name}</p>
+                        <p className="text-[10px] text-[#4F4E55]">{item.date}</p>
+                        <div className="flex items-center gap-1 mt-1.5">
+                          {item.hexes.slice(0, 5).map((h, i) => (
+                            <div
+                              key={i}
+                              className="h-3 w-3 rounded-full border border-neutral-200"
+                              style={{ backgroundColor: h }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteSavedPalette(item.id, e)}
+                        className="text-neutral-400 hover:text-red-500 p-1"
+                        title="Delete saved palette"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* Privacy Badge */}
-      <div className="mt-8 flex items-center justify-center">
-        <div className="inline-flex items-center gap-2 rounded-full border border-[#E5E1D6] bg-[#F4F2EC] px-4 py-2 text-xs font-medium text-[#4F4E55]">
-          <ShieldCheck className="h-4 w-4 text-[#1F8C7F]" />
-          <span>
-            100% private. Your image is processed in your browser and never uploaded.
-          </span>
-        </div>
+      {/* PRIVACY BADGE */}
+      <div className="rounded-2xl border border-[#C9C7C1] bg-white p-4 text-center max-w-xl mx-auto flex items-center justify-center gap-2.5 text-xs sm:text-sm font-semibold text-[#0B0B0D]">
+        <ShieldCheck className="h-4 w-4 shrink-0 text-[#5846F6]" />
+        <span>100% private. All color extraction runs in your browser. No images are uploaded.</span>
       </div>
     </div>
   );
